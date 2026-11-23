@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Meu Catálogo de Livros</title>
+<style>
+  body { font-family: sans-serif; max-width: 900px; margin: 20px auto; padding: 0 10px; }
+  #stats { display: flex; gap: 10px; margin-bottom: 20px; }
+  #stats div { flex: 1; border: 1px solid #ccc; padding: 10px; text-align: center; }
+  #stats b { display: block; font-size: 22px; }
+  form, .filtros { margin-bottom: 15px; display: flex; gap: 8px; flex-wrap: wrap; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { border-bottom: 1px solid #ddd; padding: 6px; text-align: left; }
+  #erro { color: #b00020; margin: 10px 0; }
+  #carregando, #vazio { color: #666; margin: 10px 0; }
+</style>
+</head>
+<body>
+<h1>Meu Catálogo de Livros</h1>
+
+<div id="stats"></div>
+
+<h3>Cadastrar livro</h3>
+<form id="form-livro">
+  <input name="title" placeholder="Título" required>
+  <input name="year" type="number" placeholder="Ano" required>
+  <input name="pages" type="number" placeholder="Páginas" required>
+  <select name="authorId" id="autores" required></select>
+  <button>Adicionar</button>
+</form>
+
+<div class="filtros">
+  <select id="filtro-status">
+    <option value="">Todos</option>
+    <option value="WANT_TO_READ">Quero ler</option>
+    <option value="READING">Lendo</option>
+    <option value="FINISHED">Lidos</option>
+  </select>
+  <input id="busca" placeholder="Buscar por título">
+</div>
+
+<div id="erro"></div>
+<div id="carregando" hidden>Carregando...</div>
+<div id="vazio" hidden>Nenhum livro encontrado.</div>
+
+<table id="tabela" hidden>
+  <thead>
+    <tr><th>Título</th><th>Autor</th><th>Ano</th><th>Págs</th><th>Status</th><th>Nota</th><th></th></tr>
+  </thead>
+  <tbody id="lista"></tbody>
+</table>
+
+<script>
+const API = "http://localhost:8000/graphql";
+
+const STATUS = { WANT_TO_READ: "Quero ler", READING: "Lendo", FINISHED: "Lido" };
+
+async function gql(query, variables = {}) {
+  const res = await fetch(API, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, variables }),
+  });
+  if (!res.ok) throw new Error("Erro HTTP " + res.status);
+  const json = await res.json();
+  if (json.errors) throw new Error(json.errors.map(e => e.message).join("; "));
+  return json.data;
+}
+
+// uma única requisição traz livros, autores e estatísticas
+const QUERY_TELA = `
+  query Tela($status: ReadingStatus, $search: String) {
+    books(status: $status, search: $search) {
+      id title year pages status rating
+      author { name }
+    }
+    authors { id name }
+    stats { totalBooks finishedBooks averageRating totalPagesRead }
+  }`;
+
+const el = id => document.getElementById(id);
+
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+async function carregar() {
+  el("erro").textContent = "";
+  el("carregando").hidden = false;
+  try {
+    const data = await gql(QUERY_TELA, {
+      status: el("filtro-status").value || null,
+      search: el("busca").value.trim() || null,
+    });
+    mostrarStats(data.stats);
+    mostrarAutores(data.authors);
+    mostrarLivros(data.books);
+  } catch (e) {
+    el("erro").textContent = e.message;
+  } finally {
+    el("carregando").hidden = true;
+  }
+}
+
+function mostrarStats(s) {
+  const media = s.averageRating === null ? "—" : s.averageRating.toFixed(1);
+  el("stats").innerHTML =
+    `<div><b>${s.totalBooks}</b>Livros</div>` +
+    `<div><b>${s.finishedBooks}</b>Lidos</div>` +
+    `<div><b>${media}</b>Nota média</div>` +
+    `<div><b>${s.totalPagesRead}</b>Páginas lidas</div>`;
+}
+
+function mostrarAutores(autores) {
+  const sel = el("autores");
+  const atual = sel.value;
+  sel.innerHTML = autores.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join("");
+  sel.value = atual;
+}
+
+function mostrarLivros(livros) {
+  el("vazio").hidden = livros.length > 0;
+  el("tabela").hidden = livros.length === 0;
+  el("lista").innerHTML = livros.map(b => {
+    const opcoesStatus = Object.keys(STATUS)
+      .map(k => `<option value="${k}" ${k === b.status ? "selected" : ""}>${STATUS[k]}</option>`).join("");
+    const lido = b.status === "FINISHED";
+    const opcoesNota = ['<option value="">—</option>']
+      .concat([1, 2, 3, 4, 5].map(n => `<option value="${n}" ${n === b.rating ? "selected" : ""}>${n}</option>`)).join("");
+    return `<tr data-id="${b.id}">
+      <td>${esc(b.title)}</td>
+      <td>${esc(b.author.name)}</td>
+      <td>${b.year}</td>
+      <td>${b.pages}</td>
+      <td><select class="status">${opcoesStatus}</select></td>
+      <td><select class="nota" ${lido ? "" : "disabled"}>${opcoesNota}</select></td>
+      <td><button class="excluir">Excluir</button></td>
+    </tr>`;
+  }).join("");
+}
+
+async function mutar(query, variables) {
+  el("erro").textContent = "";
+  try {
+    await gql(query, variables);
+  } catch (e) {
+    el("erro").textContent = e.message;
+  }
+  carregar();
+}
+
+el("form-livro").addEventListener("submit", e => {
+  e.preventDefault();
+  const f = e.target;
+  mutar(
+    `mutation($input: BookInput!) { addBook(input: $input) { id } }`,
+    { input: {
+        title: f.title.value,
+        year: parseInt(f.year.value),
+        pages: parseInt(f.pages.value),
+        authorId: f.authorId.value,
+    } }
+  );
+  f.reset();
+});
+
+el("lista").addEventListener("change", e => {
+  const id = e.target.closest("tr").dataset.id;
+  if (e.target.classList.contains("status")) {
+    mutar(
+      `mutation($id: ID!, $status: ReadingStatus!) { updateBookStatus(id: $id, status: $status) { id } }`,
+      { id, status: e.target.value }
+    );
+  }
+  if (e.target.classList.contains("nota") && e.target.value) {
+    mutar(
+      `mutation($id: ID!, $rating: Int!) { rateBook(id: $id, rating: $rating) { id } }`,
+      { id, rating: parseInt(e.target.value) }
+    );
+  }
+});
+
+el("lista").addEventListener("click", e => {
+  if (!e.target.classList.contains("excluir")) return;
+  if (!confirm("Excluir este livro?")) return;
+  const id = e.target.closest("tr").dataset.id;
+  mutar(`mutation($id: ID!) { deleteBook(id: $id) }`, { id });
+});
+
+el("filtro-status").addEventListener("change", carregar);
+
+// extra: debounce de 300 ms na busca
+let timer;
+el("busca").addEventListener("input", () => {
+  clearTimeout(timer);
+  timer = setTimeout(carregar, 300);
+});
+
+carregar();
+</script>
+</body>
+</html>
